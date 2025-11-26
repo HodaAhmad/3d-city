@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>3D GLTF Viewer</title>
+  <style>
+    body { margin: 0; overflow: hidden; }
+    canvas { display: block; }
+  </style>
+
+  <!-- Three.js + GLTFLoader + OrbitControls -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.137.5/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.137.5/examples/js/loaders/GLTFLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.137.5/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+  
+
+<script>
+  const MODEL_URL = "https://rxccjqipacsdrzaicnxo.supabase.co/storage/v1/object/public/City/uploads/lamar-city.glb";
+
+  // --- BASIC SCENE SETUP ---
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x444444); // mid-gray background
+
+  const camera = new THREE.PerspectiveCamera(
+    60, // FOV
+    window.innerWidth / window.innerHeight,
+    1,
+    100000
+  );
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.toneMappingExposure = 1.0;
+  document.body.appendChild(renderer.domElement);
+
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.05;
+
+  // --- LIGHTING ---
+  const ambientLight = new THREE.AmbientLight(0xffffff, 1.5);
+  scene.add(ambientLight);
+
+  const dirLight1 = new THREE.DirectionalLight(0xffffff, 2.0);
+  dirLight1.position.set(1, 1, 1);
+  scene.add(dirLight1);
+
+  const dirLight2 = new THREE.DirectionalLight(0xffffff, 1.5);
+  dirLight2.position.set(-1, 1, -1);
+  scene.add(dirLight2);
+
+  const hemiLight = new THREE.HemisphereLight(0xffffff, 0xcccccc, 1.2);
+  scene.add(hemiLight);
+
+  // --- GLTF LOADER ---
+  const loader = new THREE.GLTFLoader();
+  loader.load(
+      MODEL_URL,
+    (gltf) => {
+      const model = gltf.scene;
+      scene.add(model);
+
+      console.log('✅ Model loaded');
+
+      // --- BRIGHTEN MATERIALS ---
+      function brightenMaterial(mat) {
+        mat.side = THREE.DoubleSide;
+        mat.transparent = false;
+        if (mat.opacity !== undefined) mat.opacity = 1.0;
+
+        if (mat.color) {
+          const brightness = mat.color.r + mat.color.g + mat.color.b;
+          if (brightness < 0.2) {
+            mat.color.setRGB(0.6, 0.6, 0.6);
+          } else if (brightness < 0.8) {
+            mat.color.multiplyScalar(1.5);
+          }
+        }
+
+        if (mat.emissive) {
+          mat.emissive.setHex(0x222222);
+        }
+      }
+
+      model.traverse((child) => {
+        if (child.isMesh && child.material) {
+          if (Array.isArray(child.material)) {
+            child.material.forEach(brightenMaterial);
+          } else {
+            brightenMaterial(child.material);
+          }
+        }
+      });
+
+      // --- FIND BOUNDING BOX OF "REAL" BUILDINGS ---
+      // Instead of using the whole model (which may include a huge flat plane),
+      // we build a bbox from meshes that have some vertical height.
+      const fullBox = new THREE.Box3().setFromObject(model);
+      console.log('📏 Full bbox:', fullBox);
+
+      let buildingBox = new THREE.Box3();
+      let hasBuildings = false;
+      const tmpBox = new THREE.Box3();
+      const tmpSize = new THREE.Vector3();
+
+      model.traverse((child) => {
+        if (child.isMesh && child.geometry) {
+          tmpBox.setFromObject(child);
+          tmpBox.getSize(tmpSize);
+
+          // Consider only meshes with some height (Y) as "buildings"
+          if (tmpSize.y > 1) {
+            if (!hasBuildings) {
+              buildingBox.copy(tmpBox);
+              hasBuildings = true;
+            } else {
+              buildingBox.union(tmpBox);
+            }
+          }
+        }
+      });
+
+      let usedBox;
+      if (hasBuildings) {
+        usedBox = buildingBox;
+        console.log('🏢 Using building bbox:', buildingBox);
+      } else {
+        usedBox = fullBox; // fallback
+        console.log('⚠️ No tall buildings detected, using full bbox');
+      }
+
+      const usedSize = usedBox.getSize(new THREE.Vector3());
+      const usedCenter = usedBox.getCenter(new THREE.Vector3());
+
+      console.log('📏 Used bbox size:', usedSize);
+      console.log('📍 Used bbox center:', usedCenter);
+
+      // --- SCALE MODEL BASED ON BUILDING BBOX ---
+      const maxDim = Math.max(usedSize.x, usedSize.y, usedSize.z);
+      const desiredSize = 3000; // how big we want the city (in scene units)
+      const scaleFactor = desiredSize / maxDim;
+
+      model.scale.setScalar(scaleFactor);
+
+      // Recompute building bbox AFTER scaling
+      let scaledUsedBox = new THREE.Box3();
+      if (hasBuildings) {
+        // Recompute by traversing again to avoid including empty stuff
+        let first = true;
+        model.traverse((child) => {
+          if (child.isMesh && child.geometry) {
+            tmpBox.setFromObject(child);
+            tmpBox.getSize(tmpSize);
+            if (tmpSize.y > 1) {
+              if (first) {
+                scaledUsedBox.copy(tmpBox);
+                first = false;
+              } else {
+                scaledUsedBox.union(tmpBox);
+              }
+            }
+          }
+        });
+      } else {
+        scaledUsedBox = new THREE.Box3().setFromObject(model);
+      }
+
+      const scaledSize = scaledUsedBox.getSize(new THREE.Vector3());
+      const scaledCenter = scaledUsedBox.getCenter(new THREE.Vector3());
+
+      console.log('📏 Scaled used bbox size:', scaledSize);
+      console.log('📍 Scaled used bbox center:', scaledCenter);
+
+      // Move whole model so buildings are centered at origin
+      model.position.sub(scaledCenter);
+
+      // Final bbox & center after reposition
+      const finalBox = new THREE.Box3().setFromObject(model);
+      const finalSize = finalBox.getSize(new THREE.Vector3());
+      const target = finalBox.getCenter(new THREE.Vector3());
+
+      console.log('📏 Final bbox size:', finalSize);
+      console.log('📍 Final center:', target);
+
+      // --- CAMERA POSITIONING ---
+      const maxFinalDim = Math.max(finalSize.x, finalSize.y, finalSize.z);
+      const fovRad = camera.fov * (Math.PI / 180);
+
+      // Distance that would fit the whole bbox
+      let fitDistance = maxFinalDim / (2 * Math.tan(fovRad / 2));
+
+      // Zoom in more: use smaller factor (0.4 = closer than “fit”)
+      const zoomFactor = 0.4;
+      const distance = fitDistance * zoomFactor;
+
+      // Place camera close + slightly above
+      camera.position.set(
+        target.x + distance * 0.8,
+        target.y + distance * 0.6,
+        target.z + distance * 0.8
+      );
+      camera.lookAt(target);
+
+      controls.target.copy(target);
+      controls.minDistance = distance * 0.1;  // can zoom in 10x closer
+      controls.maxDistance = distance * 10;   // and out if needed
+      controls.update();
+
+      console.log('📍 Camera position:', camera.position);
+      console.log('📍 Camera distance from target:', camera.position.distanceTo(target));
+    },
+    undefined,
+    (error) => {
+      console.error('❌ Error loading GLTF:', error);
+    }
+  );
+
+  // --- ANIMATION LOOP ---
+  function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+  }
+
+  animate();
+
+  // --- HANDLE WINDOW RESIZE ---
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+</script>
+</body>
+</html>
