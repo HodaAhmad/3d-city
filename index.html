@@ -6,6 +6,47 @@
   <style>
     body { margin: 0; overflow: hidden; }
     canvas { display: block; }
+
+    /* Simple centered loader overlay */
+    #loader {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  z-index: 10;
+}
+
+/* 🔹 Background image as a separate layer */
+#loader::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: url("./preview.jpg");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+
+  /* 🔹 Blur ONLY the image */
+  filter: blur(8px);
+
+  /* Make sure it sits behind the text */
+  z-index: -1;
+}
+
+/* 🔹 Loader text stays sharp */
+#loader-inner {
+  position: relative;
+  z-index: 1;
+  padding: 12px 20px;
+  border-radius: 6px;
+  background: rgba(0,0,0,0.1);
+  border: 1px solid #fff;
+  color: #fff;
+  text-align: center;
+}
+
   </style>
 
   <!-- Three.js + GLTFLoader + OrbitControls -->
@@ -14,14 +55,30 @@
   <script src="https://cdn.jsdelivr.net/npm/three@0.137.5/examples/js/controls/OrbitControls.js"></script>
 </head>
 <body>
-  
+
+  <!-- Loader overlay -->
+  <div id="loader">
+    <div id="loader-inner">
+      <div id="loader-text">
+        Loading city… <span id="progress">0</span>%
+      </div>
+    </div>
+  </div>
 
 <script>
   const MODEL_URL = "https://rxccjqipacsdrzaicnxo.supabase.co/storage/v1/object/public/City/uploads/lamar-city.glb";
 
+  // Optional: later you can paste values here:
+  const USE_CUSTOM_START = true; // set to true after you capture values with 'C'
+  const CUSTOM_CAMERA_POS = new THREE.Vector3(-96.21, 5.09, 51.82);   // replace after debug
+  const CUSTOM_TARGET     = new THREE.Vector3(0, 0, 0);   // replace after debug
+
+  const loaderEl    = document.getElementById('loader');
+  const progressEl  = document.getElementById('progress');
+
   // --- BASIC SCENE SETUP ---
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x444444); // mid-gray background
+  scene.background = new THREE.Color(0xffffff); // mid-gray background
 
   const camera = new THREE.PerspectiveCamera(
     60, // FOV
@@ -30,7 +87,7 @@
     100000
   );
 
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  const renderer = new THREE.WebGLRenderer({ antialias: false });
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.outputEncoding = THREE.sRGBEncoding;
   renderer.toneMappingExposure = 1.0;
@@ -39,6 +96,16 @@
   const controls = new THREE.OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.05;
+
+  /* Prevent going underneath the city:
+     polar angle is measured from +Y downwards:
+     0   = straight up
+     PI/2 = horizon
+     PI   = straight down
+     So we clamp maxPolarAngle to PI/2 = horizon level.
+  */
+  controls.minPolarAngle = 0.0;
+  controls.maxPolarAngle = Math.PI / 2; 
 
   // --- LIGHTING ---
   const ambientLight = new THREE.AmbientLight(0xffffff, 1.5);
@@ -58,12 +125,15 @@
   // --- GLTF LOADER ---
   const loader = new THREE.GLTFLoader();
   loader.load(
-      MODEL_URL,
+    MODEL_URL,
     (gltf) => {
       const model = gltf.scene;
       scene.add(model);
 
       console.log('✅ Model loaded');
+
+      // hide loader (this hides image + text together)
+      if (loaderEl) loaderEl.style.display = 'none';
 
       // --- BRIGHTEN MATERIALS ---
       function brightenMaterial(mat) {
@@ -96,8 +166,6 @@
       });
 
       // --- FIND BOUNDING BOX OF "REAL" BUILDINGS ---
-      // Instead of using the whole model (which may include a huge flat plane),
-      // we build a bbox from meshes that have some vertical height.
       const fullBox = new THREE.Box3().setFromObject(model);
       console.log('📏 Full bbox:', fullBox);
 
@@ -126,17 +194,17 @@
       let usedBox;
       if (hasBuildings) {
         usedBox = buildingBox;
-        console.log('🏢 Using building bbox:', buildingBox);
+        console.log('Using building bbox:', buildingBox);
       } else {
         usedBox = fullBox; // fallback
-        console.log('⚠️ No tall buildings detected, using full bbox');
+        console.log('No tall buildings detected, using full bbox');
       }
 
       const usedSize = usedBox.getSize(new THREE.Vector3());
       const usedCenter = usedBox.getCenter(new THREE.Vector3());
 
-      console.log('📏 Used bbox size:', usedSize);
-      console.log('📍 Used bbox center:', usedCenter);
+      console.log('Used bbox size:', usedSize);
+      console.log('Used bbox center:', usedCenter);
 
       // --- SCALE MODEL BASED ON BUILDING BBOX ---
       const maxDim = Math.max(usedSize.x, usedSize.y, usedSize.z);
@@ -148,7 +216,6 @@
       // Recompute building bbox AFTER scaling
       let scaledUsedBox = new THREE.Box3();
       if (hasBuildings) {
-        // Recompute by traversing again to avoid including empty stuff
         let first = true;
         model.traverse((child) => {
           if (child.isMesh && child.geometry) {
@@ -171,8 +238,8 @@
       const scaledSize = scaledUsedBox.getSize(new THREE.Vector3());
       const scaledCenter = scaledUsedBox.getCenter(new THREE.Vector3());
 
-      console.log('📏 Scaled used bbox size:', scaledSize);
-      console.log('📍 Scaled used bbox center:', scaledCenter);
+      console.log('Scaled used bbox size:', scaledSize);
+      console.log('Scaled used bbox center:', scaledCenter);
 
       // Move whole model so buildings are centered at origin
       model.position.sub(scaledCenter);
@@ -182,39 +249,53 @@
       const finalSize = finalBox.getSize(new THREE.Vector3());
       const target = finalBox.getCenter(new THREE.Vector3());
 
-      console.log('📏 Final bbox size:', finalSize);
-      console.log('📍 Final center:', target);
+      console.log('Final bbox size:', finalSize);
+      console.log('Final center:', target);
 
       // --- CAMERA POSITIONING ---
       const maxFinalDim = Math.max(finalSize.x, finalSize.y, finalSize.z);
       const fovRad = camera.fov * (Math.PI / 180);
 
-      // Distance that would fit the whole bbox
       let fitDistance = maxFinalDim / (2 * Math.tan(fovRad / 2));
-
-      // Zoom in more: use smaller factor (0.4 = closer than “fit”)
       const zoomFactor = 0.4;
       const distance = fitDistance * zoomFactor;
 
-      // Place camera close + slightly above
-      camera.position.set(
-        target.x + distance * 0.8,
-        target.y + distance * 0.6,
-        target.z + distance * 0.8
-      );
-      camera.lookAt(target);
+      if (USE_CUSTOM_START) {
+        // use your saved values
+        camera.position.copy(CUSTOM_CAMERA_POS);
+        controls.target.copy(CUSTOM_TARGET);
+        camera.lookAt(CUSTOM_TARGET);
+      } else {
+        // default auto-fit position
+        camera.position.set(
+          target.x + distance * 0.8,
+          target.y + distance * 0.6,
+          target.z + distance * 0.8
+        );
+        camera.lookAt(target);
+        controls.target.copy(target);
+      }
 
-      controls.target.copy(target);
       controls.minDistance = distance * 0.1;  // can zoom in 10x closer
       controls.maxDistance = distance * 10;   // and out if needed
       controls.update();
 
-      console.log('📍 Camera position:', camera.position);
-      console.log('📍 Camera distance from target:', camera.position.distanceTo(target));
+      console.log('Initial camera position:', camera.position);
+      console.log('Initial controls target:', controls.target);
     },
-    undefined,
+    // --- onProgress: update loader percentage ---
+    (xhr) => {
+      if (!progressEl) return;
+      if (xhr.lengthComputable && xhr.total > 0) {
+        const percent = (xhr.loaded / xhr.total) * 100;
+        progressEl.textContent = percent.toFixed(0);
+      } else {
+        progressEl.textContent = '…';
+      }
+    },
     (error) => {
       console.error('❌ Error loading GLTF:', error);
+      if (loaderEl) loaderEl.textContent = "Failed to load model 😢 (see console)";
     }
   );
 
@@ -232,6 +313,23 @@
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  // --- DEBUG: Press 'C' to log current camera + target + ready-to-paste code ---
+  window.addEventListener('keydown', (event) => {
+    if (event.key === 'c' || event.key === 'C') {
+      const cp = camera.position;
+      const ct = controls.target;
+
+      console.log('Current camera position:', cp);
+      console.log('Current controls target:', ct);
+
+      console.log(
+        `Paste this into your code:\n` +
+        `camera.position.set(${cp.x.toFixed(2)}, ${cp.y.toFixed(2)}, ${cp.z.toFixed(2)});\n` +
+        `controls.target.set(${ct.x.toFixed(2)}, ${ct.y.toFixed(2)}, ${ct.z.toFixed(2)});`
+      );
+    }
   });
 </script>
 </body>
