@@ -1,336 +1,357 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <title>3D GLTF Viewer</title>
-  <style>
-    body { margin: 0; overflow: hidden; }
-    canvas { display: block; }
+  <head>
+    <meta charset="UTF-8" />
+    <title>GLB Viewer (Auto Fit)</title>
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+      }
+    </style>
 
-    /* Simple centered loader overlay */
-    #loader {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-  z-index: 10;
-}
+    <script src="https://cdn.jsdelivr.net/npm/three@0.137.5/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.137.5/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.137.5/examples/js/controls/OrbitControls.js"></script>
+  </head>
+  <body>
+    <script>
+      let scene, camera, renderer, controls;
+      let dirLight, ambient;
 
-/* 🔹 Background image as a separate layer */
-#loader::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-image: url("./preview.jpg");
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
+      init();
+      animate();
 
-  /* 🔹 Blur ONLY the image */
-  filter: blur(8px);
+      function init() {
+        // Scene
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0xb7b8ca);
 
-  /* Make sure it sits behind the text */
-  z-index: -1;
-}
+        // Camera
+        const fov = 45;
+        const aspect = window.innerWidth / window.innerHeight;
+        const near = 0.1;
+        const far = 10000;
+        camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
+        camera.position.set(300, 300, 300);
 
-/* 🔹 Loader text stays sharp */
-#loader-inner {
-  position: relative;
-  z-index: 1;
-  padding: 12px 20px;
-  border-radius: 6px;
-  background: rgba(0,0,0,0.1);
-  border: 1px solid #fff;
-  color: #fff;
-  text-align: center;
-}
+        // Renderer
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
 
-  </style>
+        // 🔹 enable shadows
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-  <!-- Three.js + GLTFLoader + OrbitControls -->
-  <script src="https://cdn.jsdelivr.net/npm/three@0.137.5/build/three.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.137.5/examples/js/loaders/GLTFLoader.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.137.5/examples/js/controls/OrbitControls.js"></script>
-</head>
-<body>
+        document.body.appendChild(renderer.domElement);
 
-  <!-- Loader overlay -->
-  <div id="loader">
-    <div id="loader-inner">
-      <div id="loader-text">
-        Loading city… <span id="progress">0</span>%
-      </div>
-    </div>
-  </div>
+        const hemi = new THREE.HemisphereLight(0xffffff, 0x777777, 0.3);
+        scene.add(hemi);
 
-<script>
-  const MODEL_URL = "https://rxccjqipacsdrzaicnxo.supabase.co/storage/v1/object/public/City/uploads/lamar-city.glb";
+        // Lights
+        ambient = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambient);
 
-  // Optional: later you can paste values here:
-  const USE_CUSTOM_START = true; // set to true after you capture values with 'C'
-  const CUSTOM_CAMERA_POS = new THREE.Vector3(-96.21, 5.09, 51.82);   // replace after debug
-  const CUSTOM_TARGET     = new THREE.Vector3(0, 0, 0);   // replace after debug
+        dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(500, 1000, 500);
+        dirLight.castShadow = true;
 
-  const loaderEl    = document.getElementById('loader');
-  const progressEl  = document.getElementById('progress');
+        dirLight.shadow.mapSize.set(2048, 2048);
+        scene.add(dirLight);
 
-  // --- BASIC SCENE SETUP ---
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xffffff); // mid-gray background
+        //renderer.outputEncoding = THREE.sRGBEncoding;
+scene.fog = new THREE.Fog(0xb7b8ca, 800, 1800);
 
-  const camera = new THREE.PerspectiveCamera(
-    60, // FOV
-    window.innerWidth / window.innerHeight,
-    1,
-    100000
-  );
+        ambient.intensity = 0.45;
+        hemi.intensity = 0.25;
+        dirLight.intensity = 0.9;
 
-  const renderer = new THREE.WebGLRenderer({ antialias: false });
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.outputEncoding = THREE.sRGBEncoding;
-  renderer.toneMappingExposure = 1.0;
-  document.body.appendChild(renderer.domElement);
+        dirLight.color.set(0xf4f6ff); // very subtle cool tint
+        ambient.color.set(0xf0f2ff);
+        // OrbitControls
+        controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.maxPolarAngle = Math.PI / 2.05;
+        controls.screenSpacePanning = false;
+        controls.enablePan = true;
 
-  const controls = new THREE.OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true;
-  controls.dampingFactor = 0.05;
+        // Load GLB city
+        const loader = new THREE.GLTFLoader();
+        loader.load("lamar-city.glb", function (gltf) {
+          const root = gltf.scene;
+          scene.add(root);
 
-  /* Prevent going underneath the city:
-     polar angle is measured from +Y downwards:
-     0   = straight up
-     PI/2 = horizon
-     PI   = straight down
-     So we clamp maxPolarAngle to PI/2 = horizon level.
-  */
-  controls.minPolarAngle = 0.0;
-  controls.maxPolarAngle = Math.PI / 2; 
+          // Put all city meshes on default layer
+          root.traverse((obj) => {
+            if (obj.isMesh) {
+              obj.layers.set(0);
+            }
+          });
 
-  // --- LIGHTING ---
-  const ambientLight = new THREE.AmbientLight(0xffffff, 1.5);
-  scene.add(ambientLight);
+          // Hide original ground and standardize material
+          root.traverse((obj) => {
+            if (!obj.isMesh) return;
 
-  const dirLight1 = new THREE.DirectionalLight(0xffffff, 2.0);
-  dirLight1.position.set(1, 1, 1);
-  scene.add(dirLight1);
+            const name = (obj.name || "").toLowerCase();
 
-  const dirLight2 = new THREE.DirectionalLight(0xffffff, 1.5);
-  dirLight2.position.set(-1, 1, -1);
-  scene.add(dirLight2);
+            // 1) hide original ground
+            if (
+              name.includes("ground") ||
+              name.includes("plane") ||
+              name.includes("floor") ||
+              name.includes("terrain")
+            ) {
+              obj.visible = false;
+              return;
+            }
 
-  const hemiLight = new THREE.HemisphereLight(0xffffff, 0xcccccc, 1.2);
-  scene.add(hemiLight);
+            // 2) special material for building lights (windows etc.)
+            if (name.includes("buildings_lights")) {
+              console.log("Using emissive lights on:", name);
 
-  // --- GLTF LOADER ---
-  const loader = new THREE.GLTFLoader();
-  loader.load(
-    MODEL_URL,
-    (gltf) => {
-      const model = gltf.scene;
-      scene.add(model);
+              obj.material = new THREE.MeshStandardMaterial({
+                color: 0x111111, // dark base so the glow stands out
+                emissive: new THREE.Color(0xffc766), // warm but not too pale
+                emissiveIntensity: 0.25,
+                metalness: 0,
+                roughness: 0.4,
+              });
 
-      console.log('✅ Model loaded');
+              obj.castShadow = false;
+              obj.receiveShadow = false;
+              return;
+            }
 
-      // hide loader (this hides image + text together)
-      if (loaderEl) loaderEl.style.display = 'none';
+            // 3) regular building material
+            obj.material = new THREE.MeshStandardMaterial({
+              color: 0xb0b4c3, // softer grey-blue, NOT white
+              metalness: 0,
+              roughness: 0.9, // very matte, like the reference
+            });
+          });
 
-      // --- BRIGHTEN MATERIALS ---
-      function brightenMaterial(mat) {
-        mat.side = THREE.DoubleSide;
-        mat.transparent = false;
-        if (mat.opacity !== undefined) mat.opacity = 1.0;
+          const cityBoxBefore = getCityBoundingBox(root);
+          console.log(
+            "City size BEFORE scale:",
+            cityBoxBefore.getSize(new THREE.Vector3())
+          );
 
-        if (mat.color) {
-          const brightness = mat.color.r + mat.color.g + mat.color.b;
-          if (brightness < 0.2) {
-            mat.color.setRGB(0.6, 0.6, 0.6);
-          } else if (brightness < 0.8) {
-            mat.color.multiplyScalar(1.5);
-          }
-        }
+          autoScaleToSize(root, cityBoxBefore, 500);
 
-        if (mat.emissive) {
-          mat.emissive.setHex(0x222222);
-        }
+          const cityBox = getCityBoundingBox(root);
+          console.log(
+            "City size AFTER scale:",
+            cityBox.getSize(new THREE.Vector3())
+          );
+
+          addCustomGroundPlane(cityBox);
+
+          root.traverse((obj) => {
+            if (!obj.isMesh) return;
+
+            const name = (obj.name || "").toLowerCase();
+
+            if (name === "office_building" || name === "hotel") {
+              //addBuildingInteriorLight(obj);
+            }
+          });
+          // 🔹 Make buildings cast shadows
+          root.traverse((obj) => {
+            if (obj.isMesh) {
+              obj.castShadow = true;
+              obj.receiveShadow = false;
+            }
+          });
+
+          // 🔹 Configure directional light's shadow camera around city
+          const size = cityBox.getSize(new THREE.Vector3());
+          const center = cityBox.getCenter(new THREE.Vector3());
+          const maxXZ = Math.max(size.x, size.z);
+          const half = maxXZ * 0.6;
+
+          dirLight.position.set(
+            center.x + maxXZ,
+            center.y + maxXZ,
+            center.z + maxXZ
+          );
+          dirLight.target.position.copy(center);
+          scene.add(dirLight.target);
+
+          const cam = dirLight.shadow.camera;
+          cam.left = -half;
+          cam.right = half;
+          cam.top = half;
+          cam.bottom = -half;
+          cam.near = 0.1;
+          cam.far = maxXZ * 4;
+          cam.updateProjectionMatrix();
+
+          // Frame camera based on city-only box
+          frameObjectWithBox(root, cityBox, camera, controls, 1.2);
+        });
+
+        window.addEventListener("resize", onWindowResize, false);
       }
 
-      model.traverse((child) => {
-        if (child.isMesh && child.material) {
-          if (Array.isArray(child.material)) {
-            child.material.forEach(brightenMaterial);
-          } else {
-            brightenMaterial(child.material);
-          }
-        }
-      });
-
-      // --- FIND BOUNDING BOX OF "REAL" BUILDINGS ---
-      const fullBox = new THREE.Box3().setFromObject(model);
-      console.log('📏 Full bbox:', fullBox);
-
-      let buildingBox = new THREE.Box3();
-      let hasBuildings = false;
-      const tmpBox = new THREE.Box3();
-      const tmpSize = new THREE.Vector3();
-
-      model.traverse((child) => {
-        if (child.isMesh && child.geometry) {
-          tmpBox.setFromObject(child);
-          tmpBox.getSize(tmpSize);
-
-          // Consider only meshes with some height (Y) as "buildings"
-          if (tmpSize.y > 1) {
-            if (!hasBuildings) {
-              buildingBox.copy(tmpBox);
-              hasBuildings = true;
-            } else {
-              buildingBox.union(tmpBox);
-            }
-          }
-        }
-      });
-
-      let usedBox;
-      if (hasBuildings) {
-        usedBox = buildingBox;
-        console.log('Using building bbox:', buildingBox);
-      } else {
-        usedBox = fullBox; // fallback
-        console.log('No tall buildings detected, using full bbox');
+      function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
       }
 
-      const usedSize = usedBox.getSize(new THREE.Vector3());
-      const usedCenter = usedBox.getCenter(new THREE.Vector3());
+      function getCityBoundingBox(object) {
+        const box = new THREE.Box3();
+        const tempBox = new THREE.Box3();
+        let hasNonGround = false;
 
-      console.log('Used bbox size:', usedSize);
-      console.log('Used bbox center:', usedCenter);
+        object.traverse((child) => {
+          if (child.isMesh) {
+            const name = (child.name || "").toLowerCase();
+            const looksLikeGround =
+              name.includes("ground") ||
+              name.includes("plane") ||
+              name.includes("floor") ||
+              name.includes("terrain");
 
-      // --- SCALE MODEL BASED ON BUILDING BBOX ---
-      const maxDim = Math.max(usedSize.x, usedSize.y, usedSize.z);
-      const desiredSize = 3000; // how big we want the city (in scene units)
-      const scaleFactor = desiredSize / maxDim;
+            if (looksLikeGround) return;
 
-      model.scale.setScalar(scaleFactor);
-
-      // Recompute building bbox AFTER scaling
-      let scaledUsedBox = new THREE.Box3();
-      if (hasBuildings) {
-        let first = true;
-        model.traverse((child) => {
-          if (child.isMesh && child.geometry) {
-            tmpBox.setFromObject(child);
-            tmpBox.getSize(tmpSize);
-            if (tmpSize.y > 1) {
-              if (first) {
-                scaledUsedBox.copy(tmpBox);
-                first = false;
-              } else {
-                scaledUsedBox.union(tmpBox);
-              }
-            }
+            child.updateWorldMatrix(true, false);
+            tempBox.setFromObject(child);
+            box.union(tempBox);
+            hasNonGround = true;
           }
         });
-      } else {
-        scaledUsedBox = new THREE.Box3().setFromObject(model);
+
+        if (!hasNonGround) {
+          box.setFromObject(object);
+        }
+
+        return box;
       }
 
-      const scaledSize = scaledUsedBox.getSize(new THREE.Vector3());
-      const scaledCenter = scaledUsedBox.getCenter(new THREE.Vector3());
+      function autoScaleToSize(object, box, targetSize) {
+        const size = box.getSize(new THREE.Vector3());
+        const maxSize = Math.max(size.x, size.y, size.z);
+        if (maxSize === 0) return;
+        const scale = targetSize / maxSize;
+        object.scale.setScalar(scale);
+        object.updateMatrixWorld(true);
+      }
 
-      console.log('Scaled used bbox size:', scaledSize);
-      console.log('Scaled used bbox center:', scaledCenter);
+      function frameObjectWithBox(
+        object,
+        box,
+        camera,
+        controls,
+        fitOffset = 1.2
+      ) {
+        const size = box.getSize(new THREE.Vector3());
+        const center = box.getCenter(new THREE.Vector3());
+        const maxSize = Math.max(size.x, size.y, size.z);
 
-      // Move whole model so buildings are centered at origin
-      model.position.sub(scaledCenter);
+        const fitHeightDistance =
+          maxSize / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
+        const fitWidthDistance = fitHeightDistance / camera.aspect;
+        const distance =
+          fitOffset * Math.max(fitHeightDistance, fitWidthDistance);
 
-      // Final bbox & center after reposition
-      const finalBox = new THREE.Box3().setFromObject(model);
-      const finalSize = finalBox.getSize(new THREE.Vector3());
-      const target = finalBox.getCenter(new THREE.Vector3());
+        const dir = new THREE.Vector3(1, 1, 1).normalize();
+        camera.position.copy(center).add(dir.multiplyScalar(distance));
 
-      console.log('Final bbox size:', finalSize);
-      console.log('Final center:', target);
+        camera.near = Math.max(maxSize / 1000, 0.1);
+        camera.far = maxSize * 100;
+        camera.updateProjectionMatrix();
 
-      // --- CAMERA POSITIONING ---
-      const maxFinalDim = Math.max(finalSize.x, finalSize.y, finalSize.z);
-      const fovRad = camera.fov * (Math.PI / 180);
-
-      let fitDistance = maxFinalDim / (2 * Math.tan(fovRad / 2));
-      const zoomFactor = 0.4;
-      const distance = fitDistance * zoomFactor;
-
-      if (USE_CUSTOM_START) {
-        // use your saved values
-        camera.position.copy(CUSTOM_CAMERA_POS);
-        controls.target.copy(CUSTOM_TARGET);
-        camera.lookAt(CUSTOM_TARGET);
-      } else {
-        // default auto-fit position
-        camera.position.set(
-          target.x + distance * 0.8,
-          target.y + distance * 0.6,
-          target.z + distance * 0.8
-        );
-        camera.lookAt(target);
+        const target = center.clone();
+        target.y = box.min.y;
         controls.target.copy(target);
+        controls.minDistance = maxSize * 0.1;
+        controls.maxDistance = maxSize * 10;
+        controls.update();
       }
 
-      controls.minDistance = distance * 0.1;  // can zoom in 10x closer
-      controls.maxDistance = distance * 10;   // and out if needed
-      controls.update();
-
-      console.log('Initial camera position:', camera.position);
-      console.log('Initial controls target:', controls.target);
-    },
-    // --- onProgress: update loader percentage ---
-    (xhr) => {
-      if (!progressEl) return;
-      if (xhr.lengthComputable && xhr.total > 0) {
-        const percent = (xhr.loaded / xhr.total) * 100;
-        progressEl.textContent = percent.toFixed(0);
-      } else {
-        progressEl.textContent = '…';
+      function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
       }
-    },
-    (error) => {
-      console.error('❌ Error loading GLTF:', error);
-      if (loaderEl) loaderEl.textContent = "Failed to load model 😢 (see console)";
-    }
-  );
 
-  // --- ANIMATION LOOP ---
-  function animate() {
-    requestAnimationFrame(animate);
-    controls.update();
-    renderer.render(scene, camera);
-  }
+      function addCustomGroundPlane(box) {
+        const size = box.getSize(new THREE.Vector3());
+        const center = box.getCenter(new THREE.Vector3());
+        const maxXZ = Math.max(size.x, size.z);
 
-  animate();
+        const planeGeo = new THREE.PlaneGeometry(maxXZ * 2, maxXZ * 2);
+        const planeMat = new THREE.MeshStandardMaterial({
+          color: 0x888a9c,
+          roughness: 0.9,
+          metalness: 0,
+        });
 
-  // --- HANDLE WINDOW RESIZE ---
-  window.addEventListener('resize', () => {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-  });
+        const plane = new THREE.Mesh(planeGeo, planeMat);
+        plane.rotation.x = -Math.PI / 2;
+        plane.position.set(center.x, box.min.y + 40, center.z);
 
-  // --- DEBUG: Press 'C' to log current camera + target + ready-to-paste code ---
-  window.addEventListener('keydown', (event) => {
-    if (event.key === 'c' || event.key === 'C') {
-      const cp = camera.position;
-      const ct = controls.target;
+        plane.receiveShadow = true;
+        plane.castShadow = false;
 
-      console.log('Current camera position:', cp);
-      console.log('Current controls target:', ct);
+        scene.add(plane);
+      }
 
-      console.log(
-        `Paste this into your code:\n` +
-        `camera.position.set(${cp.x.toFixed(2)}, ${cp.y.toFixed(2)}, ${cp.z.toFixed(2)});\n` +
-        `controls.target.set(${ct.x.toFixed(2)}, ${ct.y.toFixed(2)}, ${ct.z.toFixed(2)});`
-      );
-    }
-  });
-</script>
-</body>
+      function addBuildingInteriorLight(mesh, color = 0xffc766) {
+        const box = new THREE.Box3().setFromObject(mesh);
+        const size = box.getSize(new THREE.Vector3());
+        const center = box.getCenter(new THREE.Vector3());
+        const maxSize = Math.max(size.x, size.y, size.z) || 10;
+
+        const light = new THREE.PointLight(color, 0.5, maxSize * 5, 2);
+        const outward = size.x * 0.25; // 25% outward from center
+light.position.set(
+  center.x + outward,
+  box.min.y + 5,
+  center.z + outward
+);
+        light.castShadow = false; // keep global sun shadows only (cleaner)
+
+        scene.add(light);
+
+        // 🔍 Debug helper so you can see where the light is
+        const helper = new THREE.PointLightHelper(light, maxSize * 0.3);
+        scene.add(helper);
+
+        console.log("Added interior light for:", mesh.name, {
+          pos: light.position,
+          radius: maxSize * 4,
+        });
+      }
+
+      function debugWireframeMesh(root, nameSubstring) {
+        const target = nameSubstring.toLowerCase();
+
+        root.traverse((obj) => {
+          if (!obj.isMesh) return;
+
+          const name = (obj.name || "").toLowerCase();
+
+          // Show only meshes whose name contains the substring
+          const isTarget = name.includes(target);
+          obj.visible = isTarget;
+
+          if (isTarget) {
+            console.log("Debugging mesh:", obj.name, obj.geometry);
+
+            obj.material = new THREE.MeshBasicMaterial({
+              color: 0xff00ff,
+              wireframe: true,
+            });
+          }
+        });
+      }
+    </script>
+  </body>
 </html>

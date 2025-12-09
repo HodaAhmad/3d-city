@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>3D GLTF Viewer</title>
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+      }
+
+      /* Simple centered loader overlay */
+      #loader {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        z-index: 10;
+      }
+
+      /* Background image as a separate layer */
+      #loader::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background-image: url("./preview.jpg");
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
+
+        /* Blur ONLY the image */
+        filter: blur(8px);
+
+        /* Make sure it sits behind the text */
+        z-index: -1;
+      }
+
+      /* 🔹 Loader text stays sharp */
+      #loader-inner {
+        position: relative;
+        z-index: 1;
+        padding: 12px 20px;
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.1);
+        border: 1px solid #fff;
+        color: #fff;
+        text-align: center;
+      }
+    </style>
+
+    <!-- Three.js + GLTFLoader + OrbitControls -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.137.5/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.137.5/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.137.5/examples/js/controls/OrbitControls.js"></script>
+  </head>
+  <body>
+    <!-- Loader overlay -->
+    <div id="loader">
+      <div id="loader-inner">
+        <div id="loader-text">Loading city… <span id="progress">0</span>%</div>
+      </div>
+    </div>
+
+<script>
+  const MODEL_URL = "./lamar-city.glb";
+  const USE_CUSTOM_START = false;
+  const CUSTOM_CAMERA_POS = new THREE.Vector3(-25.81, 2.98, 1.28);
+  const CUSTOM_TARGET = new THREE.Vector3(0, 0, 0);
+
+  const tmpBox = new THREE.Box3();
+  const tmpSize = new THREE.Vector3();
+
+  const loaderEl = document.getElementById("loader");
+  const progressEl = document.getElementById("progress");
+
+  // --- BASIC SCENE SETUP ---
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(
+    60,
+    window.innerWidth / window.innerHeight,
+    1,
+    100000
+  );
+
+  const renderer = new THREE.WebGLRenderer({ antialias: false });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.toneMappingExposure = 1.0;
+  renderer.toneMapping = THREE.NoToneMapping;
+  document.body.appendChild(renderer.domElement);
+
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.05;
+  controls.minPolarAngle = 0.0;
+  controls.maxPolarAngle = Math.PI / 2;
+
+  // --- LIGHTING ---
+  const ambientLight = new THREE.AmbientLight(0xe7e5ef, 0.2);
+  scene.add(ambientLight);
+
+  const hemiLight = new THREE.HemisphereLight(0xe0deee, 0xb9b6c8, 0.7);
+  hemiLight.position.set(0, 1, 0);
+  scene.add(hemiLight);
+
+  const sunLight = new THREE.DirectionalLight(0xffffff, 1);
+  sunLight.position.set(10, 20, 10);
+  sunLight.target.position.set(0, 0, 0);
+  scene.add(sunLight.target);
+
+  sunLight.castShadow = true;
+  sunLight.shadow.mapSize.width = 2048;
+  sunLight.shadow.mapSize.height = 2048;
+  sunLight.shadow.camera.near = 1;
+  sunLight.shadow.camera.far = 100;
+  sunLight.shadow.camera.left = -30;
+  sunLight.shadow.camera.right = 30;
+  sunLight.shadow.camera.top = 30;
+  sunLight.shadow.camera.bottom = -30;
+  sunLight.shadow.bias = -0.0005;
+
+  scene.add(sunLight);
+
+  ambientLight.intensity = 0.1;
+  hemiLight.intensity = 0.5;
+
+  const SHOW_SHADOW_HELPER = true;
+  let shadowHelper = null;
+  if (SHOW_SHADOW_HELPER) {
+    shadowHelper = new THREE.CameraHelper(sunLight.shadow.camera);
+    scene.add(shadowHelper);
+  }
+
+  // --- GLTF LOADER ---
+  const loader = new THREE.GLTFLoader();
+  loader.load(
+    MODEL_URL,
+    (gltf) => {
+      const model = gltf.scene;
+      scene.add(model);
+
+      // --- DETECT BUILDINGS & IGNORE WEIRD OUTLIERS ---
+      let buildingBox = new THREE.Box3();
+      let hasBuildings = false;
+      let buildingBoxInitialized = false;
+
+      model.traverse((child) => {
+        if (child.isMesh && child.geometry) {
+          tmpBox.setFromObject(child);
+          tmpBox.getSize(tmpSize);
+
+          const name = (child.name || "").toLowerCase();
+
+          // Mark obvious weird long stuff (like speed lines) so we can ignore it later
+          const isWeirdTall =
+            tmpSize.y > 400 || // very tall stuff
+            (tmpSize.y > tmpSize.x * 5 && tmpSize.y > tmpSize.z * 5) ||
+            name.includes("speed_line") ||
+            name.includes("speed_lines");
+
+          if (isWeirdTall) {
+            child.userData.isWeird = true;
+            console.log("Ignoring weird tall mesh in bbox:", child.name, tmpSize);
+            return;
+          }
+
+          // Treat anything reasonably tall as building candidate
+          if (tmpSize.y > 0.1) {
+            child.userData.isBuilding = true;
+            hasBuildings = true;
+
+            if (!buildingBoxInitialized) {
+              buildingBox.copy(tmpBox);
+              buildingBoxInitialized = true;
+            } else {
+              buildingBox.union(tmpBox);
+            }
+
+            // Debug:
+            // console.log("Building candidate:", child.name, tmpSize);
+          }
+        }
+      });
+
+      console.log("✅ Model loaded");
+
+      if (loaderEl) loaderEl.style.display = "none";
+
+      const cityColor = new THREE.Color(0xb7b8ca);
+      let realGround = null;
+
+      // Hide/suppress original ground, mark it but don't use for bbox/camera
+      model.traverse((child) => {
+        if (child.isMesh) {
+          const box = new THREE.Box3().setFromObject(child);
+          const size = box.getSize(new THREE.Vector3());
+          const area = size.x * size.z;
+          const name = (child.name || "").toLowerCase();
+
+          if (
+            (size.y < 10 && area > 10000) ||
+            name.includes("ground") ||
+            name.includes("plane")
+          ) {
+            console.log("Marking original ground:", child.name);
+            child.visible = false;
+            child.userData.isGround = true;
+            if (child.material && child.material.color) {
+              child.material.color.set(0xb7b8ca);
+            }
+            child.receiveShadow = true;
+          }
+        }
+      });
+
+      function stylizeMaterial(mat, mesh) {
+        if (!mat) return;
+        if (mesh && mesh.userData.isGround) return;
+
+        if (mat.color) {
+          mat.color.copy(cityColor);
+        }
+        if ("metalness" in mat) mat.metalness = 0.0;
+        if ("roughness" in mat) mat.roughness = 1.0;
+        if (mat.emissive) mat.emissive.set(0x000000);
+      }
+
+      // --- BASE BBOX FROM BUILDINGS (IF AVAILABLE), OTHERWISE FULL MODEL ---
+      const fullBox = new THREE.Box3().setFromObject(model);
+      console.log("Full bbox BEFORE scaling:", fullBox);
+
+      let baseBox;
+      if (hasBuildings) {
+        baseBox = buildingBox.clone();
+        console.log("Using buildingBox as base bbox:", baseBox);
+      } else {
+        baseBox = fullBox.clone();
+        console.log("No buildings found, using fullBox as base bbox.");
+      }
+
+      let baseSize = baseBox.getSize(new THREE.Vector3());
+      let baseCenter = baseBox.getCenter(new THREE.Vector3());
+      console.log("baseSize:", baseSize);
+      console.log("baseCenter:", baseCenter);
+
+      // --- STYLE MATERIALS + SHADOW FLAGS ---
+      const LIGHT_BUILDING_COLOR = new THREE.Color(0xffffff);
+      const NORMAL_CITY_COLOR = new THREE.Color(0xb7b8ca);
+
+      model.traverse((child) => {
+        if (child.isMesh && child.material) {
+          const materials = Array.isArray(child.material)
+            ? child.material
+            : [child.material];
+
+          if (child.userData.isGround) {
+            child.castShadow = false;
+            child.receiveShadow = true;
+          } else if (child.userData.isWeird) {
+            // Weird stuff shouldn't matter for bbox/shadows, but let it cast if you want
+            child.castShadow = false;
+            child.receiveShadow = false;
+          } else {
+            child.castShadow = true;
+            child.receiveShadow = true;
+          }
+
+          materials.forEach((mat) => {
+            mat.metalness = 0;
+            mat.roughness = 1;
+
+            if (!child.userData.isGround && child.userData.isBuilding) {
+              mat.color.copy(LIGHT_BUILDING_COLOR);
+            } else {
+              mat.color.copy(NORMAL_CITY_COLOR);
+            }
+          });
+        }
+      });
+
+      // --- SCALE + CENTER USING CLEAN BASE BOX ---
+// --- AUTOMATIC SCALE + CENTER MODEL ---
+
+// 1) bounding box before scale
+let box = new THREE.Box3().setFromObject(model);
+let size = box.getSize(new THREE.Vector3());
+let center = box.getCenter(new THREE.Vector3());
+
+// 2) largest dimension
+let maxDim = Math.max(size.x, size.y, size.z);
+
+// 3) world size you want your city to occupy
+const TARGET_SCENE_SIZE = 20;  // the city will fit inside a 20x20x20 cube
+
+// 4) compute scale factor
+let scale = TARGET_SCENE_SIZE / maxDim;
+model.scale.setScalar(scale);
+model.updateMatrixWorld(true);
+
+// 5) recompute bounding box after scale
+box = new THREE.Box3().setFromObject(model);
+size = box.getSize(new THREE.Vector3());
+center = box.getCenter(new THREE.Vector3());
+
+// 6) center the model at origin
+model.position.sub(center);
+model.updateMatrixWorld(true);
+
+// 7) final bbox for camera & shadows
+const finalBox = new THREE.Box3().setFromObject(model);
+const finalSize = finalBox.getSize(new THREE.Vector3());
+const finalCenter = finalBox.getCenter(new THREE.Vector3());
+
+console.log("AUTO final size:", finalSize);
+console.log("AUTO final center:", finalCenter);
+
+
+// === SUN + SHADOW CAMERA BASED ON CLEAN CITY BOX ===
+const maxFinalDim = Math.max(finalSize.x, finalSize.y, finalSize.z) || 1;
+const half = maxFinalDim;
+
+// Place sun in a nice angled position
+sunLight.position.set(
+  finalCenter.x - maxFinalDim * 1.2, // left
+  finalCenter.y + maxFinalDim * 1.2, // above
+  finalCenter.z + maxFinalDim * 0.8  // in front
+);
+sunLight.target.position.copy(finalCenter);
+sunLight.target.updateMatrixWorld();
+
+// Shadow frustum just big enough for the city
+sunLight.shadow.camera.near = maxFinalDim * 0.05;
+sunLight.shadow.camera.far  = maxFinalDim * 4.0;
+sunLight.shadow.camera.left   = -half;
+sunLight.shadow.camera.right  =  half;
+sunLight.shadow.camera.top    =  half;
+sunLight.shadow.camera.bottom = -half;
+
+sunLight.shadow.mapSize.width  = 4096;
+sunLight.shadow.mapSize.height = 4096;
+sunLight.shadow.bias = -0.0005;
+
+sunLight.shadow.camera.updateProjectionMatrix();
+if (SHOW_SHADOW_HELPER && shadowHelper) {
+  shadowHelper.update();
+}
+
+// --- BACKGROUND ---
+renderer.outputEncoding = THREE.sRGBEncoding;
+scene.background = new THREE.Color(0xeeeeff);
+
+// --- GROUND PLANE UNDER CITY CORE ---
+const shadowGroundGeo = new THREE.PlaneGeometry(
+  maxFinalDim * 3,
+  maxFinalDim * 3
+);
+
+const shadowGroundMat = new THREE.MeshStandardMaterial({
+  color: 0x9a9bb0, // your grey
+  roughness: 1,
+  metalness: 0,
+});
+
+const shadowGround = new THREE.Mesh(shadowGroundGeo, shadowGroundMat);
+shadowGround.rotation.x = -Math.PI / 2;
+
+// put it at bottom of city bbox
+shadowGround.position.set(
+  finalCenter.x,
+  finalBox.min.y - 0.1,
+  finalCenter.z
+);
+
+shadowGround.receiveShadow = true;
+shadowGround.castShadow = false;
+scene.add(shadowGround);
+
+console.log("Shadow ground position:", shadowGround.position);
+
+// --- CAMERA POSITIONING ---
+const fovRad = (camera.fov * Math.PI) / 180;
+const fitDistance = maxFinalDim / (2 * Math.tan(fovRad / 2));
+const distance = fitDistance * 1.5; // a bit further than “just fits”
+
+if (USE_CUSTOM_START) {
+  camera.position.copy(CUSTOM_CAMERA_POS);
+  controls.target.copy(CUSTOM_TARGET);
+  camera.lookAt(CUSTOM_TARGET);
+} else {
+  camera.position.set(
+    finalCenter.x + distance,
+    finalCenter.y + distance * 0.7,
+    finalCenter.z + distance
+  );
+  camera.lookAt(finalCenter);
+  controls.target.copy(finalCenter);
+}
+
+// tighter min/max zoom because the world is small now
+controls.minDistance = distance * 0.2;
+controls.maxDistance = distance * 3.0;
+controls.update();
+
+console.log("Initial camera position:", camera.position);
+console.log("Initial controls target:", controls.target);
+
+    },
+    (xhr) => {
+      if (!progressEl) return;
+      if (xhr.lengthComputable && xhr.total > 0) {
+        const percent = (xhr.loaded / xhr.total) * 100;
+        progressEl.textContent = percent.toFixed(0);
+      } else {
+        progressEl.textContent = "…";
+      }
+    },
+    (error) => {
+      console.error("❌ Error loading GLTF:", error);
+      if (loaderEl)
+        loaderEl.textContent = "Failed to load model 😢 (see console)";
+    }
+  );
+
+  // --- ANIMATION LOOP ---
+  function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+  }
+
+  animate();
+
+  // --- HANDLE WINDOW RESIZE ---
+  window.addEventListener("resize", () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  // --- DEBUG CAMERA SAVE ---
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "c" || event.key === "C") {
+      const cp = camera.position;
+      const ct = controls.target;
+
+      console.log("Current camera position:", cp);
+      console.log("Current controls target:", ct);
+
+      console.log(
+        `Paste this into your code:\n` +
+          `camera.position.set(${cp.x.toFixed(2)}, ${cp.y.toFixed(
+            2
+          )}, ${cp.z.toFixed(2)});\n` +
+          `controls.target.set(${ct.x.toFixed(2)}, ${ct.y.toFixed(
+            2
+          )}, ${ct.z.toFixed(2)});`
+      );
+    }
+  });
+</script>
+
+  </body>
+</html>
+
