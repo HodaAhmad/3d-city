@@ -11,6 +11,61 @@
       canvas {
         display: block;
       }
+
+      /*  Simple centered loader overlay */
+      #loader {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        z-index: 10;
+        opacity: 1;
+        transition: opacity 0.4s ease;
+      }
+
+      /* Background image as a separate layer */
+      #loader::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background-image: url("./preview.jpg");
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
+        /* Blur ONLY the image */
+        filter: blur(8px);
+        /* Make sure it sits behind the text */
+        z-index: -1;
+        transform: scale(1.05); /* avoid edge blur artifacts */
+      }
+
+      /* Loader text stays sharp */
+      #loader-inner {
+        position: relative;
+        z-index: 1;
+        padding: 12px 20px;
+        border-radius: 6px;
+        display: flex;
+        gap: 5px;
+        background: rgba(0, 0, 0, 0.35);
+        border: 1px solid #fff;
+        color: #fff;
+        text-align: center;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+
+      #loader-progress {
+        font-size: 0.9rem;
+        opacity: 0.9;
+      }
+
+      /* hidden state after load */
+      #loader.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
     </style>
 
     <script src="https://cdn.jsdelivr.net/npm/three@0.137.5/build/three.min.js"></script>
@@ -18,17 +73,38 @@
     <script src="https://cdn.jsdelivr.net/npm/three@0.137.5/examples/js/controls/OrbitControls.js"></script>
   </head>
   <body>
+    <!--  Loader overlay -->
+    <div id="loader">
+      <div id="loader-inner">
+        <div>Loading</div>
+        <div id="loader-progress">0%</div>
+      </div>
+    </div>
+
     <script>
       let scene, camera, renderer, controls;
       let dirLight, ambient;
 
+      // refs for loader DOM
+      const loaderOverlay = document.getElementById("loader");
+      const loaderProgress = document.getElementById("loader-progress");
+
       init();
       animate();
+
+      function hideLoader() {
+        if (!loaderOverlay) return;
+        loaderOverlay.classList.add("hidden");
+        // optional: remove from DOM after fade
+        setTimeout(() => {
+          loaderOverlay.remove();
+        }, 500);
+      }
 
       function init() {
         // Scene
         scene = new THREE.Scene();
-        scene.background = new THREE.Color(0xb7b8ca);
+        scene.background = new THREE.Color(0xa8acc8);
 
         // Camera
         const fov = 45;
@@ -36,14 +112,15 @@
         const near = 0.1;
         const far = 10000;
         camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
-        camera.position.set(300, 300, 300);
+        //camera.position.set(300, 300, 300);
+        camera.position.set(-174.2, 39.43, 39.98);
 
         // Renderer
         renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
         renderer.setPixelRatio(window.devicePixelRatio);
 
-        // 🔹 enable shadows
+        //  enable shadows
         renderer.shadowMap.enabled = true;
         renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -59,12 +136,10 @@
         dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
         dirLight.position.set(500, 1000, 500);
         dirLight.castShadow = true;
-
         dirLight.shadow.mapSize.set(2048, 2048);
         scene.add(dirLight);
 
-        //renderer.outputEncoding = THREE.sRGBEncoding;
-scene.fog = new THREE.Fog(0xb7b8ca, 800, 1800);
+        scene.fog = new THREE.Fog(0xb7b8ca, 800, 1800);
 
         ambient.intensity = 0.45;
         hemi.intensity = 0.25;
@@ -72,6 +147,7 @@ scene.fog = new THREE.Fog(0xb7b8ca, 800, 1800);
 
         dirLight.color.set(0xf4f6ff); // very subtle cool tint
         ambient.color.set(0xf0f2ff);
+
         // OrbitControls
         controls = new THREE.OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
@@ -80,120 +156,140 @@ scene.fog = new THREE.Fog(0xb7b8ca, 800, 1800);
         controls.screenSpacePanning = false;
         controls.enablePan = true;
 
+        //  Log camera + target every time you move (for picking a good start pose)
+        controls.addEventListener("change", logCameraState);
+        controls.target.set(-24.66, -39.88, -8.46);
         // Load GLB city
-        const loader = new THREE.GLTFLoader();
-        loader.load("lamar-city.glb", function (gltf) {
-          const root = gltf.scene;
-          scene.add(root);
+        const gltfLoader = new THREE.GLTFLoader();
+        const modelUrl =
+          "https://rxccjqipacsdrzaicnxo.supabase.co/storage/v1/object/public/City/uploads/lamar-city.glb";
+        //const modelUrl = "lamar-city.glb";
 
-          // Put all city meshes on default layer
-          root.traverse((obj) => {
-            if (obj.isMesh) {
-              obj.layers.set(0);
-            }
-          });
+        gltfLoader.load(
+          modelUrl,
+          function (gltf) {
+            const root = gltf.scene;
+            scene.add(root);
 
-          // Hide original ground and standardize material
-          root.traverse((obj) => {
-            if (!obj.isMesh) return;
-
-            const name = (obj.name || "").toLowerCase();
-
-            // 1) hide original ground
-            if (
-              name.includes("ground") ||
-              name.includes("plane") ||
-              name.includes("floor") ||
-              name.includes("terrain")
-            ) {
-              obj.visible = false;
-              return;
-            }
-
-            // 2) special material for building lights (windows etc.)
-            if (name.includes("buildings_lights")) {
-              console.log("Using emissive lights on:", name);
-
-              obj.material = new THREE.MeshStandardMaterial({
-                color: 0x111111, // dark base so the glow stands out
-                emissive: new THREE.Color(0xffc766), // warm but not too pale
-                emissiveIntensity: 0.25,
-                metalness: 0,
-                roughness: 0.4,
-              });
-
-              obj.castShadow = false;
-              obj.receiveShadow = false;
-              return;
-            }
-
-            // 3) regular building material
-            obj.material = new THREE.MeshStandardMaterial({
-              color: 0xb0b4c3, // softer grey-blue, NOT white
-              metalness: 0,
-              roughness: 0.9, // very matte, like the reference
+            // Put all city meshes on default layer
+            root.traverse((obj) => {
+              if (obj.isMesh) {
+                obj.layers.set(0);
+              }
             });
-          });
 
-          const cityBoxBefore = getCityBoundingBox(root);
-          console.log(
-            "City size BEFORE scale:",
-            cityBoxBefore.getSize(new THREE.Vector3())
-          );
+            // Hide original ground and standardize material
+            root.traverse((obj) => {
+              if (!obj.isMesh) return;
 
-          autoScaleToSize(root, cityBoxBefore, 500);
+              const name = (obj.name || "").toLowerCase();
 
-          const cityBox = getCityBoundingBox(root);
-          console.log(
-            "City size AFTER scale:",
-            cityBox.getSize(new THREE.Vector3())
-          );
+              // 1) hide original ground
+              if (
+                name.includes("ground") ||
+                name.includes("plane") ||
+                name.includes("floor") ||
+                name.includes("terrain")
+              ) {
+                obj.visible = false;
+                return;
+              }
 
-          addCustomGroundPlane(cityBox);
+              // 2) special material for building lights (windows etc.)
+              if (name.includes("buildings_lights")) {
+                console.log("Using emissive lights on:", name);
 
-          root.traverse((obj) => {
-            if (!obj.isMesh) return;
+                obj.material = new THREE.MeshStandardMaterial({
+                  color: 0x111111, // dark base so the glow stands out
+                  emissive: new THREE.Color(0xffc766), // warm but not too pale
+                  emissiveIntensity: 0.25,
+                  metalness: 0,
+                  roughness: 0.4,
+                });
 
-            const name = (obj.name || "").toLowerCase();
+                obj.castShadow = false;
+                obj.receiveShadow = false;
+                return;
+              }
 
-            if (name === "office_building" || name === "hotel") {
-              //addBuildingInteriorLight(obj);
+              // 3) regular building material
+              obj.material = new THREE.MeshStandardMaterial({
+                color: 0xb0b4c3, // softer grey-blue, NOT white
+                metalness: 0,
+                roughness: 0.9, // very matte, like the reference
+              });
+            });
+
+            const cityBoxBefore = getCityBoundingBox(root);
+            console.log(
+              "City size BEFORE scale:",
+              cityBoxBefore.getSize(new THREE.Vector3())
+            );
+
+            autoScaleToSize(root, cityBoxBefore, 500);
+
+            const cityBox = getCityBoundingBox(root);
+            console.log(
+              "City size AFTER scale:",
+              cityBox.getSize(new THREE.Vector3())
+            );
+
+            addCustomGroundPlane(cityBox);
+
+            //  Make buildings cast shadows
+            root.traverse((obj) => {
+              if (obj.isMesh) {
+                obj.castShadow = true;
+                obj.receiveShadow = false;
+              }
+            });
+
+            //  Configure directional light's shadow camera around city
+            const size = cityBox.getSize(new THREE.Vector3());
+            const center = cityBox.getCenter(new THREE.Vector3());
+            const maxXZ = Math.max(size.x, size.z);
+            const half = maxXZ * 0.6;
+
+            dirLight.position.set(
+              center.x + maxXZ,
+              center.y + maxXZ,
+              center.z + maxXZ
+            );
+            dirLight.target.position.copy(center);
+            scene.add(dirLight.target);
+
+            const cam = dirLight.shadow.camera;
+            cam.left = -half;
+            cam.right = half;
+            cam.top = half;
+            cam.bottom = -half;
+            cam.near = 0.1;
+            cam.far = maxXZ * 4;
+            cam.updateProjectionMatrix();
+
+            // Frame camera based on city-only box
+            frameObjectWithBox(root, cityBox, camera, controls, 1.2);
+
+            // ✅ hide loader after everything is set up
+            hideLoader();
+          },
+          function (xhr) {
+            // onProgress
+            if (xhr.total) {
+              const percent = (xhr.loaded / xhr.total) * 100;
+              loaderProgress.textContent = `${percent.toFixed(0)}%`;
+            } else {
+              loaderProgress.textContent = `${(
+                xhr.loaded /
+                (1024 * 1024)
+              ).toFixed(1)} MB`;
             }
-          });
-          // 🔹 Make buildings cast shadows
-          root.traverse((obj) => {
-            if (obj.isMesh) {
-              obj.castShadow = true;
-              obj.receiveShadow = false;
-            }
-          });
-
-          // 🔹 Configure directional light's shadow camera around city
-          const size = cityBox.getSize(new THREE.Vector3());
-          const center = cityBox.getCenter(new THREE.Vector3());
-          const maxXZ = Math.max(size.x, size.z);
-          const half = maxXZ * 0.6;
-
-          dirLight.position.set(
-            center.x + maxXZ,
-            center.y + maxXZ,
-            center.z + maxXZ
-          );
-          dirLight.target.position.copy(center);
-          scene.add(dirLight.target);
-
-          const cam = dirLight.shadow.camera;
-          cam.left = -half;
-          cam.right = half;
-          cam.top = half;
-          cam.bottom = -half;
-          cam.near = 0.1;
-          cam.far = maxXZ * 4;
-          cam.updateProjectionMatrix();
-
-          // Frame camera based on city-only box
-          frameObjectWithBox(root, cityBox, camera, controls, 1.2);
-        });
+          },
+          function (error) {
+            console.error("Error loading GLB:", error);
+            loaderProgress.textContent = "Error loading city 😢";
+          }
+        );
 
         window.addEventListener("resize", onWindowResize, false);
       }
@@ -261,7 +357,7 @@ scene.fog = new THREE.Fog(0xb7b8ca, 800, 1800);
           fitOffset * Math.max(fitHeightDistance, fitWidthDistance);
 
         const dir = new THREE.Vector3(1, 1, 1).normalize();
-        camera.position.copy(center).add(dir.multiplyScalar(distance));
+        //camera.position.copy(center).add(dir.multiplyScalar(distance));
 
         camera.near = Math.max(maxSize / 1000, 0.1);
         camera.far = maxSize * 100;
@@ -311,16 +407,15 @@ scene.fog = new THREE.Fog(0xb7b8ca, 800, 1800);
 
         const light = new THREE.PointLight(color, 0.5, maxSize * 5, 2);
         const outward = size.x * 0.25; // 25% outward from center
-light.position.set(
-  center.x + outward,
-  box.min.y + 5,
-  center.z + outward
-);
-        light.castShadow = false; // keep global sun shadows only (cleaner)
+        light.position.set(
+          center.x + outward,
+          box.min.y + 5,
+          center.z + outward
+        );
+        light.castShadow = false;
 
         scene.add(light);
 
-        // 🔍 Debug helper so you can see where the light is
         const helper = new THREE.PointLightHelper(light, maxSize * 0.3);
         scene.add(helper);
 
@@ -337,8 +432,6 @@ light.position.set(
           if (!obj.isMesh) return;
 
           const name = (obj.name || "").toLowerCase();
-
-          // Show only meshes whose name contains the substring
           const isTarget = name.includes(target);
           obj.visible = isTarget;
 
@@ -351,6 +444,23 @@ light.position.set(
             });
           }
         });
+      }
+
+      //  Logs camera + target as ready-to-paste JS
+      function logCameraState() {
+        const p = camera.position;
+        const t = controls.target;
+        console.log(
+          `camera.position.set(${p.x.toFixed(2)}, ${p.y.toFixed(
+            2
+          )}, ${p.z.toFixed(2)});`
+        );
+        console.log(
+          `controls.target.set(${t.x.toFixed(2)}, ${t.y.toFixed(
+            2
+          )}, ${t.z.toFixed(2)});`
+        );
+        console.log("---");
       }
     </script>
   </body>
